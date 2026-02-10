@@ -13,7 +13,20 @@ use base64::Engine;
 use anyhow::{Result, anyhow, Context};
 use log::{info, error, warn};
 
+// 加密库
+use aes::Aes128;
+use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+use cbc::cipher::block_padding::Pkcs7;
+use des::Des;
+use rsa::{RsaPublicKey, PublicKey, pkcs1v15::Pkcs1v15Encrypt};
+use rsa::pkcs8::DecodePublicKey;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use std::io::Write;
+use uuid::Uuid;
+
 type HmacSha256 = Hmac<Sha256>;
+type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AuthResponse {
@@ -124,6 +137,21 @@ struct ResourceInfo {
     count: i32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct DeviceProfileResponse {
+    code: i32,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    detail: Option<DeviceDetail>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DeviceDetail {
+    #[serde(rename = "deviceId")]
+    device_id: String,
+}
+
 #[derive(Debug, Clone)]
 struct Credential {
     token: String,
@@ -150,6 +178,92 @@ struct SignResult {
     rewards: Vec<String>,
     error: String,
 }
+
+// ==================== 设备指纹生成相关常量 ====================
+const RSA_PUBLIC_KEY: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCmxMNr7n8ZeT0tE1R9j/mPixoinPkeM+k4VGIn/s0k7N5rJAfnZ0eMER+QhwFvshzo0LNmeUkpR8uIlU/GEVr8mN28sKmwd2gpygqj0ePnBmOW4v0ZVwbSYK+izkhVFk2V/doLoMbWy6b+UnA8mkjvg0iYWRByfRsK2gdl7llqCwIDAQAB";
+
+const DES_RULE: [(&str, &str, &str, i32); 25] = [
+    ("appId", "DES", "uy7mzc4h", 1),
+    ("box", "", "", 0),
+    ("canvas", "DES", "snrn887t", 1),
+    ("clientSize", "DES", "cpmjjgsu", 1),
+    ("organization", "DES", "78moqjfc", 1),
+    ("os", "DES", "je6vk6t4", 1),
+    ("platform", "DES", "pakxhcd2", 1),
+    ("plugins", "DES", "v51m3pzl", 1),
+    ("pmf", "DES", "2mdeslu3", 1),
+    ("protocol", "", "", 0),
+    ("referer", "DES", "y7bmrjlc", 1),
+    ("res", "DES", "whxqm2a7", 1),
+    ("rtype", "DES", "x8o2h2bl", 1),
+    ("sdkver", "DES", "9q3dcxp2", 1),
+    ("status", "DES", "2jbrxxw4", 1),
+    ("subVersion", "DES", "eo3i2puh", 1),
+    ("svm", "DES", "fzj3kaeh", 1),
+    ("time", "DES", "q2t3odsk", 1),
+    ("timezone", "DES", "1uv05lj5", 1),
+    ("tn", "DES", "x9nzj1bp", 1),
+    ("trees", "DES", "acfs0xo4", 1),
+    ("ua", "DES", "k92crp1t", 1),
+    ("url", "DES", "y95hjkoo", 1),
+    ("version", "", "", 0),
+    ("vpw", "DES", "r9924ab5", 1),
+];
+
+const DES_OBFUSCATED_NAMES: [(&str, &str); 25] = [
+    ("appId", "xx"),
+    ("box", "jf"),
+    ("canvas", "yk"),
+    ("clientSize", "zx"),
+    ("organization", "dp"),
+    ("os", "pj"),
+    ("platform", "gm"),
+    ("plugins", "kq"),
+    ("pmf", "vw"),
+    ("protocol", "protocol"),
+    ("referer", "ab"),
+    ("res", "hf"),
+    ("rtype", "lo"),
+    ("sdkver", "sc"),
+    ("status", "an"),
+    ("subVersion", "ns"),
+    ("svm", "qr"),
+    ("time", "nb"),
+    ("timezone", "as"),
+    ("tn", "py"),
+    ("trees", "pi"),
+    ("ua", "bj"),
+    ("url", "cf"),
+    ("version", "version"),
+    ("vpw", "ca"),
+];
+
+const DES_TARGET_BASE: [(&str, &str); 9] = [
+    ("protocol", "102"),
+    ("organization", "UWXspnCCJN4sfYlNfqps"),
+    ("appId", "default"),
+    ("os", "web"),
+    ("version", "3.0.0"),
+    ("sdkver", "3.0.0"),
+    ("box", ""),
+    ("rtype", "all"),
+    ("subVersion", "1.0.0"),
+];
+
+const BROWSER_ENV: [(&str, &str); 9] = [
+    ("plugins", "MicrosoftEdgePDFPluginPortableDocumentFormatinternal-pdf-viewer1,MicrosoftEdgePDFViewermhjfbmdgcfjbbpaeojofohoefgiehjai1"),
+    ("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0"),
+    ("canvas", "259ffe69"),
+    ("timezone", "-480"),
+    ("platform", "Win32"),
+    ("url", "https://www.skland.com/"),
+    ("referer", ""),
+    ("res", "1920_1080_24_1.25"),
+    ("clientSize", "0_0_1080_1920_1920_1080_1920_1080"),
+];
+
+const USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 12; SM-A5560 Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Safari/537.36; SKLand/1.52.1";
+
 struct SklandClient {
     client: Client,
     device_id: String,
@@ -164,35 +278,265 @@ impl SklandClient {
             .build()
             .context("Failed to create HTTP client")?;
 
-        let device_id = Self::generate_device_id()?;
-
         Ok(SklandClient {
             client,
-            device_id,
-            user_agent: "Mozilla/5.0 (Linux; Android 12; SM-A5560) AppleWebKit/537.36 Chrome/101.0.4951.61 Safari/537.36; SKLand/1.52.1".to_string(),
+            device_id: String::new(),
+            user_agent: USER_AGENT.to_string(),
             retry_count: 3,
         })
     }
 
-    fn generate_device_id() -> Result<String> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("Time went backwards")?
-            .as_millis();
-
-        let random_str: String = (0..16)
-            .map(|i| (b'A' + (i % 26) as u8) as char)
-            .collect();
-
-        let mut hasher = Md5::new();
-        hasher.update(format!("{}{}", timestamp, random_str));
-        let result = hasher.finalize();
-        let hex = format!("{:x}", result);
-
-        Ok(format!("B{}", &hex[..16.min(hex.len())].to_uppercase()))
+    // ==================== 设备指纹生成方法 ====================
+    
+    /// DES 加密 (ECB 模式，NULL 填充)
+    fn des_encrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        use des::cipher::generic_array::GenericArray;
+        use des::cipher::BlockEncrypt;
+        
+        // 准备 8 字节密钥
+        let mut key_bytes = [0u8; 8];
+        let key_len = key.len().min(8);
+        key_bytes[..key_len].copy_from_slice(&key[..key_len]);
+        
+        let cipher = Des::new(GenericArray::from_slice(&key_bytes));
+        
+        // NULL 填充到 8 的倍数
+        let padding_len = 8 - (data.len() % 8);
+        let mut padded_data = data.to_vec();
+        if padding_len != 8 {
+            padded_data.extend(vec![0u8; padding_len]);
+        }
+        
+        let mut result = Vec::new();
+        for chunk in padded_data.chunks(8) {
+            let mut block = GenericArray::clone_from_slice(chunk);
+            cipher.encrypt_block(&mut block);
+            result.extend_from_slice(&block);
+        }
+        
+        Ok(result)
     }
 
-    fn generate_signature(&self, token: &str, path: &str, body: &str) -> Result<(String, HashMap<String, String>)> {
+    /// AES-128-CBC 加密
+    fn aes_encrypt(data: &[u8], key: &[u8]) -> Result<String> {
+        // Base64 编码
+        let base64_data = base64::engine::general_purpose::STANDARD.encode(data);
+        let mut data_bytes = base64_data.into_bytes();
+        
+        // NULL 填充到 16 的倍数
+        let pad_len = 16 - (data_bytes.len() % 16);
+        if pad_len != 16 {
+            data_bytes.extend(vec![0u8; pad_len]);
+        }
+        
+        // 准备密钥 (16 字节)
+        let mut key_bytes = [0u8; 16];
+        let key_len = key.len().min(16);
+        key_bytes[..key_len].copy_from_slice(&key[..key_len]);
+        
+        // 固定 IV
+        let iv = b"0102030405060708";
+        
+        // PKCS7 填充 (使用 cbc crate 的 Pkcs7)
+        let encryptor = Aes128CbcEnc::new_from_slices(&key_bytes, iv)
+            .map_err(|e| anyhow!("AES key/IV length error: {:?}", e))?;
+        
+        let mut buf = data_bytes.clone();
+        let len = data_bytes.len();
+        buf.resize(len + 16, 0); // 预留填充空间
+        
+        let ct = encryptor.encrypt_padded_b2b_mut::<Pkcs7>(&data_bytes, &mut buf)
+            .map_err(|e| anyhow!("AES encryption error: {:?}", e))?;
+        
+        // 转十六进制字符串
+        Ok(hex::encode_upper(ct))
+    }
+
+    /// 生成 SMID
+    fn get_smid() -> String {
+        let time_str = Local::now().format("%Y%m%d%H%M%S").to_string();
+        let uid = Uuid::new_v4().to_string();
+        
+        let mut hasher = Md5::new();
+        hasher.update(uid.as_bytes());
+        let uid_hash = format!("{:x}", hasher.finalize());
+        
+        let v = format!("{}{}00", time_str, uid_hash);
+        
+        let mut hasher2 = Md5::new();
+        hasher2.update(format!("smsk_web_{}", v));
+        let smsk_web = hasher2.finalize();
+        
+        let suffix = hex::encode(&smsk_web[..7]);
+        format!("{}{}0", v, suffix)
+    }
+
+    /// 计算 TN 哈希
+    fn get_tn(data: &HashMap<String, String>) -> String {
+        let mut keys: Vec<&String> = data.keys().collect();
+        keys.sort();
+        
+        let mut result = String::new();
+        for key in keys {
+            if let Some(value) = data.get(key) {
+                // 尝试解析为整数
+                if let Ok(num) = value.parse::<i64>() {
+                    result.push_str(&(num * 10000).to_string());
+                } else {
+                    result.push_str(value);
+                }
+            }
+        }
+        result
+    }
+
+    /// 应用 DES 加密规则
+    fn apply_des_rules(data: &HashMap<String, String>) -> Result<HashMap<String, String>> {
+        let mut result = HashMap::new();
+        
+        // 构建混淆名称映射
+        let obfuscated_map: HashMap<&str, &str> = DES_OBFUSCATED_NAMES.iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        
+        for (key, value) in data {
+            if let Some(rule) = DES_RULE.iter().find(|(k, _, _, _)| k == key) {
+                let (_, cipher, des_key, is_encrypt) = rule;
+                
+                if *is_encrypt == 1 && !cipher.is_empty() {
+                    // DES 加密
+                    let encrypted = Self::des_encrypt(des_key.as_bytes(), value.as_bytes())?;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+                    if let Some(&obf_name) = obfuscated_map.get(key.as_str()) {
+                        result.insert(obf_name.to_string(), b64);
+                    }
+                } else {
+                    // 不加密
+                    if let Some(&obf_name) = obfuscated_map.get(key.as_str()) {
+                        result.insert(obf_name.to_string(), value.clone());
+                    }
+                }
+            } else {
+                result.insert(key.clone(), value.clone());
+            }
+        }
+        
+        Ok(result)
+    }
+
+    /// 生成设备 ID (完整流程)
+    async fn generate_device_id(&mut self) -> Result<String> {
+        if !self.device_id.is_empty() {
+            return Ok(self.device_id.clone());
+        }
+
+        // 1. 生成 UUID 和 priId
+        let uid = Uuid::new_v4().to_string();
+        let mut hasher = Md5::new();
+        hasher.update(uid.as_bytes());
+        let uid_hash = hasher.finalize();
+        let pri_id_hex = hex::encode(&uid_hash[..8]);
+
+        // 2. RSA 加密 UUID
+        let public_key_der = base64::engine::general_purpose::STANDARD.decode(RSA_PUBLIC_KEY)
+            .context("Failed to decode RSA public key")?;
+        let public_key = RsaPublicKey::from_public_key_der(&public_key_der)
+            .context("Failed to parse RSA public key")?;
+        
+        let encrypted_uid = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, uid.as_bytes())
+            .context("RSA encryption failed")?;
+        let ep_base64 = base64::engine::general_purpose::STANDARD.encode(&encrypted_uid);
+
+        // 3. 构建浏览器指纹
+        let in_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Time went backwards")?
+            .as_millis() as i64;
+            
+        let mut des_target = HashMap::new();
+        
+        // 添加基础目标数据
+        for (k, v) in DES_TARGET_BASE.iter() {
+            des_target.insert(k.to_string(), v.to_string());
+        }
+        
+        // 添加浏览器环境
+        for (k, v) in BROWSER_ENV.iter() {
+            des_target.insert(k.to_string(), v.to_string());
+        }
+        
+        // 添加动态数据
+        des_target.insert("smid".to_string(), Self::get_smid());
+        des_target.insert("vpw".to_string(), Uuid::new_v4().to_string());
+        des_target.insert("trees".to_string(), Uuid::new_v4().to_string());
+        des_target.insert("svm".to_string(), in_ms.to_string());
+        des_target.insert("pmf".to_string(), in_ms.to_string());
+        des_target.insert("time".to_string(), in_ms.to_string());
+
+        // 4. 计算 TN
+        let tn_input = Self::get_tn(&des_target);
+        let mut tn_hasher = Md5::new();
+        tn_hasher.update(tn_input.as_bytes());
+        let tn = format!("{:x}", tn_hasher.finalize());
+        des_target.insert("tn".to_string(), tn);
+
+        // 5. 应用 DES 规则
+        let des_result = Self::apply_des_rules(&des_target)?;
+
+        // 6. JSON 序列化并压缩
+        let json_str = serde_json::to_string(&des_result)
+            .context("JSON serialization failed")?;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::new(2));
+        encoder.write_all(json_str.as_bytes())
+            .context("Gzip compression failed")?;
+        let compressed = encoder.finish()
+            .context("Gzip finish failed")?;
+
+        // 7. AES 加密
+        let encrypted = Self::aes_encrypt(&compressed, pri_id_hex.as_bytes())?;
+
+        // 8. 请求设备 ID
+        let response: DeviceProfileResponse = self.client
+            .post("https://fp-it.portal101.cn/deviceprofile/v4")
+            .json(&json!({
+                "appId": "default",
+                "compress": 2,
+                "data": encrypted,
+                "encode": 5,
+                "ep": ep_base64,
+                "organization": "UWXspnCCJN4sfYlNfqps",
+                "os": "web",
+            }))
+            .send()
+            .await
+            .context("Failed to request device ID")?
+            .json()
+            .await
+            .context("Failed to parse device ID response")?;
+
+        if response.code != 1100 {
+            return Err(anyhow!("Device ID generation failed: {:?}", response.message));
+        }
+
+        let did = response.detail
+            .map(|d| format!("B{}", d.device_id))
+            .ok_or_else(|| anyhow!("No device ID in response"))?;
+            
+        self.device_id = did.clone();
+        Ok(did)
+    }
+
+    // ==================== 原有 API 方法（更新以使用异步 device_id）====================
+
+    async fn get_or_generate_device_id(&mut self) -> Result<String> {
+        if self.device_id.is_empty() {
+            self.generate_device_id().await
+        } else {
+            Ok(self.device_id.clone())
+        }
+    }
+
+    fn generate_signature(&self, token: &str, path: &str, body: &str, did: &str) -> Result<(String, HashMap<String, String>)> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .context("Time went backwards")?
@@ -201,7 +545,7 @@ impl SklandClient {
         let common_args = json!({
             "platform": "3",
             "timestamp": timestamp.to_string(),
-            "dId": self.device_id,
+            "dId": did,
             "vName": "1.0.0"
         });
 
@@ -221,19 +565,19 @@ impl SklandClient {
         let mut headers = HashMap::new();
         headers.insert("platform".to_string(), "3".to_string());
         headers.insert("timestamp".to_string(), timestamp.to_string());
-        headers.insert("dId".to_string(), self.device_id.clone());
+        headers.insert("dId".to_string(), did.to_string());
         headers.insert("vName".to_string(), "1.0.0".to_string());
 
         Ok((sign, headers))
     }
 
-    fn create_headers(&self) -> Result<HeaderMap> {
+    fn create_headers(&self, did: &str) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent)?);
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
         headers.insert("Connection", HeaderValue::from_static("close"));
         headers.insert("X-Requested-With", HeaderValue::from_static("com.hypergryph.skland"));
-        headers.insert("dId", HeaderValue::from_str(&self.device_id)?);
+        headers.insert("dId", HeaderValue::from_str(did)?);
         Ok(headers)
     }
 
@@ -285,8 +629,9 @@ impl SklandClient {
         Err(last_error.unwrap_or_else(|| anyhow!("Request failed after {} retries", self.retry_count)))
     }
 
-    async fn authenticate(&self, token: &str) -> Result<String> {
-        let headers = self.create_headers()?;
+    async fn authenticate(&mut self, token: &str) -> Result<String> {
+        let did = self.get_or_generate_device_id().await?;
+        let headers = self.create_headers(&did)?;
         let url = "https://as.hypergryph.com/user/oauth2/v2/grant";
 
         let body = json!({
@@ -307,8 +652,9 @@ impl SklandClient {
         response.data.map(|d| d.code).ok_or_else(|| anyhow!("No auth data"))
     }
 
-    async fn get_credential(&self, auth_code: &str) -> Result<Credential> {
-        let headers = self.create_headers()?;
+    async fn get_credential(&mut self, auth_code: &str) -> Result<Credential> {
+        let did = self.get_or_generate_device_id().await?;
+        let headers = self.create_headers(&did)?;
         let url = "https://zonai.skland.com/web/v1/user/auth/generate_cred_by_code";
 
         let body = json!({
@@ -331,14 +677,15 @@ impl SklandClient {
         }).ok_or_else(|| anyhow!("No credential data"))
     }
 
-    async fn get_bindings(&self, cred: &Credential) -> Result<Vec<Binding>> {
+    async fn get_bindings(&mut self, cred: &Credential) -> Result<Vec<Binding>> {
+        let did = self.get_or_generate_device_id().await?;
         let url = "https://zonai.skland.com/api/v1/game/player/binding";
         let parsed_url = url::Url::parse(url).context("Invalid URL")?;
         let path = parsed_url.path();
 
-        let (sign, common_args) = self.generate_signature(&cred.token, path, "")?;
+        let (sign, common_args) = self.generate_signature(&cred.token, path, "", &did)?;
 
-        let mut headers = self.create_headers()?;
+        let mut headers = self.create_headers(&did)?;
         headers.insert("cred", HeaderValue::from_str(&cred.cred)?);
         headers.insert("sign", HeaderValue::from_str(&sign)?);
 
@@ -382,7 +729,8 @@ impl SklandClient {
 
         Ok(bindings)
     }
-    async fn sign_in(&self, cred: &Credential, binding: &Binding) -> Result<Vec<SignResult>> {
+
+    async fn sign_in(&mut self, cred: &Credential, binding: &Binding) -> Result<Vec<SignResult>> {
         let mut results = Vec::new();
 
         if binding.roles.is_empty() {
@@ -397,6 +745,7 @@ impl SklandClient {
             return Ok(results);
         }
 
+        let did = self.get_or_generate_device_id().await?;
         let url = "https://zonai.skland.com/web/v1/game/endfield/attendance";
         let parsed_url = url::Url::parse(url).context("Invalid URL")?;
         let path = parsed_url.path();
@@ -408,9 +757,9 @@ impl SklandClient {
                 binding.nick_name.clone()
             };
 
-            let (sign, common_args) = self.generate_signature(&cred.token, path, "")?;
+            let (sign, common_args) = self.generate_signature(&cred.token, path, "", &did)?;
 
-            let mut headers = self.create_headers()?;
+            let mut headers = self.create_headers(&did)?;
             headers.insert("cred", HeaderValue::from_str(&cred.cred)?);
             headers.insert("sign", HeaderValue::from_str(&sign)?);
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -499,7 +848,7 @@ impl SklandClient {
         Ok(results)
     }
 
-    async fn run(&self, token: &str) -> Result<Vec<SignResult>> {
+    async fn run(&mut self, token: &str) -> Result<Vec<SignResult>> {
         let auth_code = self.authenticate(token).await?;
         let credential = self.get_credential(&auth_code).await?;
         let bindings = self.get_bindings(&credential).await?;
@@ -514,6 +863,7 @@ impl SklandClient {
         Ok(all_results)
     }
 }
+
 struct DingTalkNotifier {
     webhook: String,
     secret: Option<String>,
@@ -554,7 +904,6 @@ impl DingTalkNotifier {
             .context("Time went backwards")?
             .as_secs() as i64 * 1000;
 
-        // 构建完整的 URL
         let sign = self.generate_sign(timestamp)?;
         let url = if self.secret.is_some() && !sign.is_empty() {
             let sign_encoded = urlencoding::encode(&sign);
@@ -625,7 +974,7 @@ async fn run_main() -> Result<()> {
         return Err(anyhow!("No valid tokens"));
     }
 
-    let client = SklandClient::new()?;
+    let mut client = SklandClient::new()?;
     let mut lines = vec![
         "### 📅 森空岛终末地签到".to_string(),
         String::new(),

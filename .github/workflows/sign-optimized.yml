@@ -38,6 +38,7 @@ jobs:
       env:
         RUST_LOG: info
         SKLAND_TOKENS: ${{ secrets.SKLAND_TOKENS }}
+        SKLAND_DEVICE_ID: ${{ secrets.SKLAND_DEVICE_ID }}
         DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
       run: |

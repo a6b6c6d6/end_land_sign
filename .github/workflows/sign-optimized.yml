@@ -5,9 +5,6 @@ on:
     - cron: '23 22 * * *'
   workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   sign:
     runs-on: ubuntu-latest
@@ -16,31 +13,19 @@ jobs:
     - name: 检出代码
       uses: actions/checkout@v4
       
-    - name: 恢复二进制缓存
-      id: cache-binary
-      uses: actions/cache@v4
+    - name: 设置 Node.js
+      uses: actions/setup-node@v4
       with:
-        path: ./endfield-sign
-        key: ${{ runner.os }}-binary-${{ hashFiles('src/**', 'Cargo.toml') }}
+        node-version: '20'
+        cache: 'npm'
         
-    - name: 安装 Rust（如需要构建）
-      if: steps.cache-binary.outputs.cache-hit != 'true'
-      uses: dtolnay/rust-toolchain@stable
+    - name: 安装依赖
+      run: npm install
       
-    - name: 构建（如缓存未命中）
-      if: steps.cache-binary.outputs.cache-hit != 'true'
-      run: |
-        cargo build --release
-        cp target/release/endfield-sign ./endfield-sign
-        strip ./endfield-sign
-        
     - name: 运行签到
       env:
-        RUST_LOG: info
         SKLAND_TOKENS: ${{ secrets.SKLAND_TOKENS }}
         SKLAND_DEVICE_ID: ${{ secrets.SKLAND_DEVICE_ID }}
         DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-      run: |
-        chmod +x ./endfield-sign
-        ./endfield-sign
+      run: npm start

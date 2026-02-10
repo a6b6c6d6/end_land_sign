@@ -1,4 +1,4 @@
-cat > Cargo.toml << 'EOF'
+
 [package]
 name = "endfield-sign"
 version = "1.0.0"

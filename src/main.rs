@@ -279,10 +279,10 @@ impl SklandClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to create HTTP client")?;
-
+        let device_id = env::var("SKLAND_DEVICE_ID").unwrap_or_default();
         Ok(SklandClient {
             client,
-            device_id: String::new(),
+            device_id,
             user_agent: USER_AGENT.to_string(),
             retry_count: 3,
         })

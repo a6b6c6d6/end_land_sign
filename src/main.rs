@@ -19,7 +19,7 @@ use cbc::cipher::{BlockEncryptMut, KeyIvInit};
 use cbc::cipher::block_padding::Pkcs7;
 use des::Des;
 use rsa::{RsaPublicKey, PublicKey, pkcs1v15::Pkcs1v15Encrypt};
-use rsa::pkcs8::DecodePublicKey;
+use pkcs8::DecodePublicKey;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;

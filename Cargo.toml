@@ -24,4 +24,3 @@ urlencoding = "2.1"
 opt-level = 3
 lto = true
 strip = true
-EOF

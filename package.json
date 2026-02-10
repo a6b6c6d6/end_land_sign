@@ -1,0 +1,16 @@
+{
+    "name": "skland-sign",
+    "version": "1.0.0",
+    "description": "森空岛终末地自动签到",
+    "main": "index.js",
+    "scripts": {
+      "start": "node index.js"
+    },
+    "dependencies": {
+      "axios": "^1.6.0",
+      "crypto-js": "^4.2.0",
+      "jsencrypt": "^3.3.2",
+      "node-rsa": "^1.1.1",
+      "uuid": "^9.0.0"
+    }
+  }

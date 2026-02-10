@@ -8,8 +8,8 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use chrono::Local;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use md5::Md5;  
-use digest::Digest;  
+use md5::Md5;
+use digest::Digest;  // 确保这行正确导入
 use base64::Engine;
 use anyhow::{Result, anyhow, Context};
 use log::{info, error};

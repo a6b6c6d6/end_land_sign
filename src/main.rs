@@ -518,7 +518,7 @@ impl SklandClient {
 
         let sign_str = format!("{}{}{}{}", path, body, timestamp, common_args);
 
-        let mut mac = HmacSha256::new_from_slice(token.as_bytes())
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(token.as_bytes())
             .map_err(|e| anyhow!("HMAC error: {:?}", e))?;
         mac.update(sign_str.as_bytes());
         let hmac_result = mac.finalize().into_bytes();
@@ -850,7 +850,7 @@ impl DingTalkNotifier {
         if let Some(secret) = &self.secret {
             let string_to_sign = format!("{}\n{}", timestamp, secret);
             
-            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+            let mut mac = <HmacSha256 as Mac>::new_from_slice(secret.as_bytes())
                 .map_err(|e| anyhow!("HMAC error: {:?}", e))?;
             mac.update(string_to_sign.as_bytes());
             let result = mac.finalize().into_bytes();

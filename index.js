@@ -3,12 +3,15 @@ const crypto = require('crypto');
 const CryptoJS = require('crypto-js');
 const zlib = require('zlib');
 const moment = require('moment');
+const { URL } = require('url');
 
+// ==================== 用户配置区域 ====================
 const SKLAND_TOKENS = process.env.SKLAND_TOKENS || "";
 const DINGTALK_WEBHOOK = process.env.DINGTALK_WEBHOOK || "";
 const DINGTALK_SECRET = process.env.DINGTALK_SECRET || "";
 const SKLAND_DEVICE_ID = process.env.SKLAND_DEVICE_ID || "";
-// =====================================================
+// 设置为 true 则自动获取代理（GitHub Actions 必须设为 true）
+const USE_PROXY = process.env.USE_PROXY === "true" || false;
 // =====================================================
 
 const RSA_PUBLIC_KEY = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCmxMNr7n8ZeT0tE1R9j/mPixoinPkeM+k4VGIn/s0k7N5rJAfnZ0eMER+QhwFvshzo0LNmeUkpR8uIlU/GEVr8mN28sKmwd2gpygqj0ePnBmOW4v0ZVwbSYK+izkhVFk2V/doLoMbWy6b+UnA8mkjvg0iYWRByfRsK2gdl7llqCwIDAQAB";
@@ -68,6 +71,102 @@ const BROWSER_ENV = {
 };
 
 const USER_AGENT = "Mozilla/5.0 (Linux; Android 12; SM-A5560 Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Safari/537.36; SKLand/1.52.1";
+
+// ==================== 代理获取模块 ====================
+
+class ProxyManager {
+  constructor() {
+    this.workingProxy = null;
+  }
+
+  async fetchProxies() {
+    console.log("正在获取代理列表...");
+    try {
+      // 使用 89ip 免费代理 API
+      const apiUrl = 'https://api.89ip.cn/tqdl.html?api=1&num=100&port=&address=&isp=';
+      const resp = await axios.get(apiUrl, { timeout: 10000 });
+      const text = resp.data;
+      
+      // 正则提取 IP:Port
+      const proxies = text.match(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}:\d+\b/g) || [];
+      console.log(`获取到 ${proxies.length} 个代理`);
+      return [...new Set(proxies)]; // 去重
+    } catch (e) {
+      console.error("获取代理列表失败:", e.message);
+      return [];
+    }
+  }
+
+  async checkProxy(proxy) {
+    const [host, port] = proxy.split(':');
+    try {
+      const start = Date.now();
+      const proxyUrl = `http://${proxy}`;
+      
+      // 测试代理：访问 httpbin.org/ip
+      await axios.get('http://httpbin.org/ip', {
+        proxy: {
+          protocol: 'http',
+          host: host,
+          port: parseInt(port)
+        },
+        timeout: 3000, // 3秒超时
+        headers: {
+          'User-Agent': 'Mozilla/5.0'
+        }
+      });
+      
+      const delay = Date.now() - start;
+      return { proxy, delay };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async getWorkingProxy(maxCheck = 20) {
+    if (!USE_PROXY) return null;
+    
+    console.log("开始检测代理可用性...");
+    const proxies = await this.fetchProxies();
+    if (proxies.length === 0) return null;
+
+    // 只检测前 maxCheck 个，避免耗时过长
+    const checkList = proxies.slice(0, maxCheck);
+    
+    // 并发检测（最多10个并发）
+    const batchSize = 10;
+    for (let i = 0; i < checkList.length; i += batchSize) {
+      const batch = checkList.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(p => this.checkProxy(p))
+      );
+      
+      // 返回第一个可用的
+      const working = results.find(r => r !== null);
+      if (working) {
+        console.log(`✓ 找到可用代理: ${working.proxy} (延迟${working.delay}ms)`);
+        this.workingProxy = working.proxy;
+        return this.workingProxy;
+      }
+    }
+    
+    console.log("未找到可用代理，将使用直连（可能失败）");
+    return null;
+  }
+
+  getAxiosProxyConfig() {
+    if (!this.workingProxy) return undefined;
+    
+    const [host, port] = this.workingProxy.split(':');
+    return {
+      protocol: 'http',
+      host: host,
+      port: parseInt(port)
+    };
+  }
+}
+
+// ==================== 原签到逻辑（修改支持代理）====================
 
 function uuidv4() {
   return crypto.randomUUID();
@@ -148,10 +247,11 @@ function applyDesRules(data) {
 }
 
 class SklandClient {
-  constructor() {
+  constructor(proxyManager) {
     this.deviceId = SKLAND_DEVICE_ID || "";
     this.userAgent = USER_AGENT;
     this.maxRetries = 3;
+    this.proxyManager = proxyManager;
   }
 
   async getDeviceId() {
@@ -202,17 +302,23 @@ class SklandClient {
     const encrypted = aesEncrypt(compressed, priIdHex);
 
     try {
-      const resp = await axios.post('https://fp-it.portal101.cn/deviceprofile/v4', {
-        appId: "default",
-        compress: 2,
-        data: encrypted,
-        encode: 5,
-        ep: epBase64,
-        organization: "UWXspnCCJN4sfYlNfqps",
-        os: "web",
-      }, {
+      const proxyConfig = this.proxyManager ? this.proxyManager.getAxiosProxyConfig() : undefined;
+      
+      const resp = await axios({
+        method: 'POST',
+        url: 'https://fp-it.portal101.cn/deviceprofile/v4',
+        data: {
+          appId: "default",
+          compress: 2,
+          data: encrypted,
+          encode: 5,
+          ep: epBase64,
+          organization: "UWXspnCCJN4sfYlNfqps",
+          os: "web",
+        },
         headers: { 'Content-Type': 'application/json' },
-        timeout: 30000
+        timeout: 30000,
+        proxy: proxyConfig
       });
 
       if (resp.data.code !== 1100) {
@@ -220,7 +326,7 @@ class SklandClient {
       }
 
       this.deviceId = `B${resp.data.detail.deviceId}`;
-      console.log('设备 ID 生成成功:', this.deviceId);
+      console.log('设备 ID 生成成功');
       return this.deviceId;
     } catch (e) {
       console.error('设备 ID 生成错误:', e.message);
@@ -263,6 +369,8 @@ class SklandClient {
   }
 
   async request(method, url, headers, data) {
+    const proxyConfig = this.proxyManager ? this.proxyManager.getAxiosProxyConfig() : undefined;
+    
     for (let i = 0; i < this.maxRetries; i++) {
       try {
         const config = {
@@ -270,7 +378,8 @@ class SklandClient {
           url,
           headers,
           timeout: 30000,
-          decompress: true
+          decompress: true,
+          proxy: proxyConfig
         };
         
         if (data !== undefined && data !== null) {
@@ -395,7 +504,6 @@ class SklandClient {
       const roleId = role.roleId || "";
       const serverId = role.serverId || "";
       
-      // 签名使用空字符串（与 Python 一致）
       const { sign, headers: commonArgs } = this.generateSignature(cred.token, path, "", did);
       
       const headers = {
@@ -411,7 +519,6 @@ class SklandClient {
       
       try {
         console.log(`正在为角色 [${roleName}] 签到...`);
-        // 关键修复：不传 data 参数（或传 null），确保请求体为空，与签名一致
         const resp = await this.request('POST', url, headers, null);
         
         if (resp.code === 0) {
@@ -532,6 +639,8 @@ class DingTalkNotifier {
   }
 }
 
+// ==================== 主程序 ====================
+
 async function main() {
   console.log('=== 森空岛终末地签到 ===');
   console.log('时间:', moment().format('YYYY-MM-DD HH:mm:ss'));
@@ -553,10 +662,17 @@ async function main() {
     process.exit(1);
   }
   
+  // 初始化代理管理器（如果需要）
+  const proxyManager = USE_PROXY ? new ProxyManager() : null;
+  if (USE_PROXY) {
+    await proxyManager.getWorkingProxy(20); // 检测前20个代理
+    console.log('');
+  }
+  
   console.log(`共 ${tokens.length} 个账号`);
   console.log('');
   
-  const client = new SklandClient();
+  const client = new SklandClient(proxyManager);
   const lines = ['### 📅 森空岛终末地签到', ''];
   
   let allOk = true;

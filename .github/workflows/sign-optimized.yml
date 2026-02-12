@@ -26,6 +26,7 @@ jobs:
       env:
         SKLAND_TOKENS: ${{ secrets.SKLAND_TOKENS }}
         SKLAND_DEVICE_ID: ${{ secrets.SKLAND_DEVICE_ID }}
+        USE_PROXY: "true"
         DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
       run: node index.js

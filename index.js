@@ -1,12 +1,16 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const CryptoJS = require('crypto-js');
-const NodeRSA = require('node-rsa');
-const { v4: uuidv4 } = require('uuid');
 const zlib = require('zlib');
 const moment = require('moment');
 
-// 常量定义
+const SKLAND_TOKENS = process.env.SKLAND_TOKENS || "";
+const DINGTALK_WEBHOOK = process.env.DINGTALK_WEBHOOK || "";
+const DINGTALK_SECRET = process.env.DINGTALK_SECRET || "";
+const SKLAND_DEVICE_ID = process.env.SKLAND_DEVICE_ID || "";
+// =====================================================
+// =====================================================
+
 const RSA_PUBLIC_KEY = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCmxMNr7n8ZeT0tE1R9j/mPixoinPkeM+k4VGIn/s0k7N5rJAfnZ0eMER+QhwFvshzo0LNmeUkpR8uIlU/GEVr8mN28sKmwd2gpygqj0ePnBmOW4v0ZVwbSYK+izkhVFk2V/doLoMbWy6b+UnA8mkjvg0iYWRByfRsK2gdl7llqCwIDAQAB";
 
 const DES_RULE = {
@@ -38,7 +42,7 @@ const DES_RULE = {
 };
 
 const DES_TARGET_BASE = {
-  "protocol": "102",
+  "protocol": 102,
   "organization": "UWXspnCCJN4sfYlNfqps",
   "appId": "default",
   "os": "web",
@@ -47,29 +51,33 @@ const DES_TARGET_BASE = {
   "box": "",
   "rtype": "all",
   "subVersion": "1.0.0",
+  "time": 0,
 };
 
 const BROWSER_ENV = {
   "plugins": "MicrosoftEdgePDFPluginPortableDocumentFormatinternal-pdf-viewer1,MicrosoftEdgePDFViewermhjfbmdgcfjbbpaeojofohoefgiehjai1",
   "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
   "canvas": "259ffe69",
-  "timezone": "-480",
+  "timezone": -480,
   "platform": "Win32",
   "url": "https://www.skland.com/",
   "referer": "",
   "res": "1920_1080_24_1.25",
   "clientSize": "0_0_1080_1920_1920_1080_1920_1080",
+  "status": "0011",
 };
 
 const USER_AGENT = "Mozilla/5.0 (Linux; Android 12; SM-A5560 Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Safari/537.36; SKLand/1.52.1";
 
-// DES 加密 (ECB 模式, NULL 填充)
+function uuidv4() {
+  return crypto.randomUUID();
+}
+
 function desEncrypt(key, data) {
-  // 使用 crypto-js 的 DES
-  const keyHex = CryptoJS.enc.Utf8.parse(key);
+  const keyStr = key.slice(0, 8).padEnd(8, '\0');
+  const keyHex = CryptoJS.enc.Utf8.parse(keyStr);
   const dataHex = CryptoJS.enc.Utf8.parse(data);
   
-  // ECB 模式
   const encrypted = CryptoJS.DES.encrypt(dataHex, keyHex, {
     mode: CryptoJS.mode.ECB,
     padding: CryptoJS.pad.ZeroPadding
@@ -78,12 +86,9 @@ function desEncrypt(key, data) {
   return Buffer.from(encrypted.ciphertext.toString(CryptoJS.enc.Base64), 'base64');
 }
 
-// AES-128-CBC 加密
 function aesEncrypt(data, key) {
-  // Base64 编码
-  const base64Data = Buffer.from(data).toString('base64');
+  const base64Data = data.toString('base64');
   
-  // 密钥处理 (16字节)
   const keyBuffer = Buffer.alloc(16);
   Buffer.from(key).copy(keyBuffer);
   
@@ -96,7 +101,6 @@ function aesEncrypt(data, key) {
   return encrypted.toUpperCase();
 }
 
-// 生成 SMID
 function getSmid() {
   const timeStr = moment().format('YYYYMMDDHHmmss');
   const uid = uuidv4();
@@ -107,29 +111,31 @@ function getSmid() {
   return `${v}${suffix}0`;
 }
 
-// 生成 TN
 function getTn(data) {
   const sortedKeys = Object.keys(data).sort();
   let result = "";
   for (const key of sortedKeys) {
     const value = data[key];
-    if (!isNaN(parseInt(value)) && !isNaN(value)) {
-      result += (parseInt(value) * 10000).toString();
+    if (typeof value === 'number') {
+      result += (value * 10000).toString();
+    } else if (typeof value === 'object' && value !== null) {
+      result += getTn(value);
     } else {
-      result += value;
+      result += value ? value.toString() : "";
     }
   }
   return result;
 }
 
-// 应用 DES 规则
 function applyDesRules(data) {
   const result = {};
   for (const [key, value] of Object.entries(data)) {
+    const strValue = value !== undefined && value !== null ? value.toString() : "";
     const rule = DES_RULE[key];
+    
     if (rule) {
       if (rule.is_encrypt === 1) {
-        const encrypted = desEncrypt(rule.key, value.toString());
+        const encrypted = desEncrypt(rule.key, strValue);
         result[rule.obfuscated_name] = encrypted.toString('base64');
       } else {
         result[rule.obfuscated_name] = value;
@@ -143,7 +149,7 @@ function applyDesRules(data) {
 
 class SklandClient {
   constructor() {
-    this.deviceId = process.env.SKLAND_DEVICE_ID || "";
+    this.deviceId = SKLAND_DEVICE_ID || "";
     this.userAgent = USER_AGENT;
     this.maxRetries = 3;
   }
@@ -151,20 +157,27 @@ class SklandClient {
   async getDeviceId() {
     if (this.deviceId) return this.deviceId;
     
-    // 生成设备 ID
+    console.log('生成新的设备 ID...');
     const uid = uuidv4();
     const uidHash = crypto.createHash('md5').update(uid).digest();
     const priIdHex = uidHash.slice(0, 8).toString('hex');
 
-    // RSA 加密
-    const key = new NodeRSA();
-    key.importKey(Buffer.from(RSA_PUBLIC_KEY, 'base64'), 'pkcs1-public-der');
-    key.setOptions({ encryptionScheme: 'pkcs1' });
-    const encryptedUid = key.encrypt(Buffer.from(uid), 'base64');
+    const publicKey = crypto.createPublicKey({
+      key: Buffer.from(RSA_PUBLIC_KEY, 'base64'),
+      format: 'der',
+      type: 'spki'
+    });
     
+    const encryptedUid = crypto.publicEncrypt(
+      {
+        key: publicKey,
+        padding: crypto.constants.RSA_PKCS1_PADDING
+      },
+      Buffer.from(uid)
+    ).toString('base64');
+
     const epBase64 = encryptedUid;
 
-    // 构建指纹
     const inMs = Date.now();
     const desTarget = {
       ...DES_TARGET_BASE,
@@ -172,27 +185,22 @@ class SklandClient {
       smid: getSmid(),
       vpw: uuidv4(),
       trees: uuidv4(),
-      svm: inMs.toString(),
-      pmf: inMs.toString(),
-      time: inMs.toString()
+      svm: inMs,
+      pmf: inMs,
+      time: inMs
     };
 
-    // 计算 TN
     const tnInput = getTn(desTarget);
     const tn = crypto.createHash('md5').update(tnInput).digest('hex');
     desTarget.tn = tn;
 
-    // DES 处理
     const desResult = applyDesRules(desTarget);
     
-    // JSON + Gzip
     const jsonStr = JSON.stringify(desResult);
     const compressed = zlib.gzipSync(jsonStr, { level: 2 });
     
-    // AES 加密
     const encrypted = aesEncrypt(compressed, priIdHex);
 
-    // 请求设备 ID
     try {
       const resp = await axios.post('https://fp-it.portal101.cn/deviceprofile/v4', {
         appId: "default",
@@ -201,46 +209,46 @@ class SklandClient {
         encode: 5,
         ep: epBase64,
         organization: "UWXspnCCJN4sfYlNfqps",
-        os: "web"
+        os: "web",
       }, {
         headers: { 'Content-Type': 'application/json' },
         timeout: 30000
       });
 
       if (resp.data.code !== 1100) {
-        throw new Error(`Device ID generation failed: ${JSON.stringify(resp.data)}`);
+        throw new Error(`设备 ID 生成失败: ${JSON.stringify(resp.data)}`);
       }
 
       this.deviceId = `B${resp.data.detail.deviceId}`;
+      console.log('设备 ID 生成成功:', this.deviceId);
       return this.deviceId;
     } catch (e) {
-      console.error('Device ID generation error:', e.message);
+      console.error('设备 ID 生成错误:', e.message);
       throw e;
     }
   }
 
   generateSignature(token, path, body, did) {
     const timestamp = Math.floor(Date.now() / 1000);
-    const commonArgs = {
+    const headerCa = {
       platform: "3",
       timestamp: timestamp.toString(),
       dId: did,
       vName: "1.0.0"
     };
-
-    const signStr = `${path}${body || ""}${timestamp}${JSON.stringify(commonArgs)}`;
     
-    // HMAC-SHA256
+    const headerCaStr = JSON.stringify(headerCa);
+    const signStr = `${path}${body || ""}${timestamp}${headerCaStr}`;
+    
     const hmac = crypto.createHmac('sha256', token);
     hmac.update(signStr);
     const hmacHex = hmac.digest('hex');
     
-    // MD5
     const md5Hash = crypto.createHash('md5').update(hmacHex).digest('hex');
     
     return {
       sign: md5Hash,
-      headers: commonArgs
+      headers: headerCa
     };
   }
 
@@ -257,17 +265,23 @@ class SklandClient {
   async request(method, url, headers, data) {
     for (let i = 0; i < this.maxRetries; i++) {
       try {
-        const resp = await axios({
+        const config = {
           method,
           url,
           headers,
-          data,
           timeout: 30000,
           decompress: true
-        });
+        };
+        
+        if (data !== undefined && data !== null) {
+          config.data = data;
+        }
+        
+        const resp = await axios(config);
         return resp.data;
       } catch (e) {
         if (i === this.maxRetries - 1) throw e;
+        console.log(`请求失败，第 ${i + 1} 次重试...`);
         await new Promise(r => setTimeout(r, 1000));
       }
     }
@@ -277,6 +291,7 @@ class SklandClient {
     const did = await this.getDeviceId();
     const headers = this.getHeaders(did);
     
+    console.log('正在认证...');
     const resp = await this.request('POST', 
       'https://as.hypergryph.com/user/oauth2/v2/grant',
       headers,
@@ -284,9 +299,10 @@ class SklandClient {
     );
     
     if (resp.status !== 0) {
-      throw new Error(`Auth failed: ${resp.message}`);
+      throw new Error(`认证失败: ${resp.message || JSON.stringify(resp)}`);
     }
     
+    console.log('认证成功');
     return resp.data.code;
   }
 
@@ -294,6 +310,7 @@ class SklandClient {
     const did = await this.getDeviceId();
     const headers = this.getHeaders(did);
     
+    console.log('正在获取凭证...');
     const resp = await this.request('POST',
       'https://zonai.skland.com/web/v1/user/auth/generate_cred_by_code',
       headers,
@@ -301,9 +318,10 @@ class SklandClient {
     );
     
     if (resp.code !== 0) {
-      throw new Error(`Credential failed: ${resp.message}`);
+      throw new Error(`获取凭证失败: ${resp.message || JSON.stringify(resp)}`);
     }
     
+    console.log('获取凭证成功');
     return { token: resp.data.token, cred: resp.data.cred };
   }
 
@@ -321,19 +339,25 @@ class SklandClient {
       ...commonArgs
     };
     
+    console.log('正在查询绑定角色...');
     const resp = await this.request('GET', url, headers, null);
     
     if (resp.code !== 0) {
-      throw new Error(`Binding failed: ${resp.message}`);
+      const msg = resp.message || "未知错误";
+      if (msg === "用户未登录") {
+        throw new Error("用户登录已过期，请重新获取 Token");
+      }
+      throw new Error(`查询绑定失败: ${msg}`);
     }
     
     const bindings = [];
     for (const item of (resp.data?.list || [])) {
-      if (item.appCode !== 'endfield') continue;
+      const appCode = item.appCode;
+      if (appCode !== 'endfield') continue;
       
       for (const binding of (item.bindingList || [])) {
         bindings.push({
-          appCode: 'endfield',
+          appCode: appCode,
           gameName: binding.gameName,
           nickName: binding.nickName,
           channelName: binding.channelName,
@@ -344,6 +368,7 @@ class SklandClient {
       }
     }
     
+    console.log(`找到 ${bindings.length} 个终末地绑定`);
     return bindings;
   }
 
@@ -357,7 +382,7 @@ class SklandClient {
         name: binding.nickName,
         channel: binding.channelName,
         rewards: [],
-        error: 'no roles'
+        error: '该账号没有绑定终末地角色'
       }];
     }
     
@@ -367,7 +392,10 @@ class SklandClient {
     
     for (const role of binding.roles) {
       const roleName = role.nickname || binding.nickName;
+      const roleId = role.roleId || "";
+      const serverId = role.serverId || "";
       
+      // 签名使用空字符串（与 Python 一致）
       const { sign, headers: commonArgs } = this.generateSignature(cred.token, path, "", did);
       
       const headers = {
@@ -375,14 +403,16 @@ class SklandClient {
         cred: cred.cred,
         sign: sign,
         'Content-Type': 'application/json',
-        'sk-game-role': `3_${role.roleId}_${role.serverId}`,
+        'sk-game-role': `3_${roleId}_${serverId}`,
         referer: 'https://game.skland.com/',
         origin: 'https://game.skland.com/',
         ...commonArgs
       };
       
       try {
-        const resp = await this.request('POST', url, headers, {});
+        console.log(`正在为角色 [${roleName}] 签到...`);
+        // 关键修复：不传 data 参数（或传 null），确保请求体为空，与签名一致
+        const resp = await this.request('POST', url, headers, null);
         
         if (resp.code === 0) {
           const rewards = [];
@@ -390,12 +420,14 @@ class SklandClient {
           const resourceMap = resp.data?.resourceInfoMap || {};
           
           for (const award of awardIds) {
-            const info = resourceMap[award.id];
-            if (info) {
+            const aid = award.id;
+            if (aid in resourceMap) {
+              const info = resourceMap[aid];
               rewards.push(`${info.name}x${info.count}`);
             }
           }
           
+          console.log(`✅ ${roleName} 签到成功`);
           results.push({
             ok: true,
             game: '终末地',
@@ -405,16 +437,21 @@ class SklandClient {
             error: ''
           });
         } else {
+          const errorMsg = resp.message || '未知错误';
+          const isSigned = errorMsg.includes('已签到') || errorMsg.includes('重复') || errorMsg.includes('already');
+          
           results.push({
             ok: false,
             game: '终末地',
             name: roleName,
             channel: binding.channelName,
             rewards: [],
-            error: resp.message || 'Unknown error'
+            error: errorMsg,
+            isSigned: isSigned
           });
         }
       } catch (e) {
+        console.log(`❌ ${roleName} 请求错误: ${e.message}`);
         results.push({
           ok: false,
           game: '终末地',
@@ -430,17 +467,27 @@ class SklandClient {
   }
 
   async run(token) {
-    const authCode = await this.authenticate(token);
-    const cred = await this.getCredential(authCode);
-    const bindings = await this.getBindings(cred);
-    
-    const allResults = [];
-    for (const binding of bindings) {
-      const results = await this.signIn(cred, binding);
-      allResults.push(...results);
+    try {
+      const authCode = await this.authenticate(token);
+      const cred = await this.getCredential(authCode);
+      const bindings = await this.getBindings(cred);
+      
+      if (bindings.length === 0) {
+        console.log('⚠️ 没有找到终末地游戏绑定');
+        return [];
+      }
+      
+      const allResults = [];
+      for (const binding of bindings) {
+        const results = await this.signIn(cred, binding);
+        allResults.push(...results);
+      }
+      
+      return allResults;
+    } catch (error) {
+      console.error('运行错误:', error.message);
+      throw error;
     }
-    
-    return allResults;
   }
 }
 
@@ -479,74 +526,94 @@ class DingTalkNotifier {
       
       return resp.data?.errcode === 0;
     } catch (e) {
-      console.error('DingTalk send failed:', e.message);
+      console.error('钉钉发送失败:', e.message);
       return false;
     }
   }
 }
 
 async function main() {
-  console.log('Starting Endfield sign-in task');
+  console.log('=== 森空岛终末地签到 ===');
+  console.log('时间:', moment().format('YYYY-MM-DD HH:mm:ss'));
+  console.log('');
   
-  const tokensEnv = process.env.SKLAND_TOKENS || '';
-  const webhook = process.env.DINGTALK_WEBHOOK || '';
-  const secret = process.env.DINGTALK_SECRET || '';
+  const tokensEnv = SKLAND_TOKENS || '';
+  const webhook = DINGTALK_WEBHOOK || '';
+  const secret = DINGTALK_SECRET || '';
   
   if (!tokensEnv) {
-    console.error('SKLAND_TOKENS not set');
+    console.error('❌ 错误：请在代码顶部的 SKLAND_TOKENS 处填写你的 Token');
     process.exit(1);
   }
   
   const tokens = tokensEnv.split(/[,;]/).map(s => s.trim()).filter(s => s);
   
   if (tokens.length === 0) {
-    console.error('No valid tokens');
+    console.error('❌ 没有有效的 Token');
     process.exit(1);
   }
   
+  console.log(`共 ${tokens.length} 个账号`);
+  console.log('');
+  
   const client = new SklandClient();
   const lines = ['### 📅 森空岛终末地签到', ''];
-  
-  console.log(`Starting task for ${tokens.length} accounts`);
   
   let allOk = true;
   
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     lines.push(`#### 🌈 账号 ${i + 1}`);
+    console.log(`--- 开始处理账号 ${i + 1} ---`);
     
     try {
       const results = await client.run(token);
       
       if (results.length === 0) {
-        lines.push('- ❌ 未找到绑定角色');
+        lines.push('- ⚠️ 未找到终末地角色绑定');
         allOk = false;
       } else {
         for (const result of results) {
-          const icon = result.ok ? '✅' : '❌';
-          const status = result.ok ? '签到成功' : '签到失败';
+          const isSignedAlready = !result.ok && result.isSigned;
           
-          let details = '';
-          if (result.rewards.length > 0) {
-            details = `奖励: ${result.rewards.join(', ')}`;
-          } else if (result.error) {
-            details = `错误: ${result.error}`;
+          let icon, statusText, detail;
+          
+          if (result.ok) {
+            icon = '✅';
+            statusText = '成功';
+            detail = result.rewards.length > 0 ? ` (${result.rewards.join(', ')})` : '';
+          } else if (isSignedAlready) {
+            icon = '✅';
+            statusText = '已签';
+            detail = '';
+          } else {
+            icon = '❌';
+            statusText = '失败';
+            detail = ` (${result.error})`;
           }
           
-          lines.push(`- ${icon} **${result.name}**: ${status} ${details}`);
+          const line = `${icon} ${result.game}: ${statusText}${detail}`;
+          lines.push(`- ${line}`);
+          console.log(`  ${line}`);
           
-          if (!result.ok) allOk = false;
+          if (!result.ok && !isSignedAlready) allOk = false;
         }
       }
     } catch (e) {
+      console.error(`账号 ${i + 1} 错误:`, e.message);
       lines.push(`- ❌ **系统错误**: ${e.message}`);
       allOk = false;
     }
     
     lines.push('');
+    console.log('');
   }
   
+  console.log('=== 签到结果汇总 ===');
+  console.log(lines.join('\n'));
+  
   if (webhook) {
+    console.log('正在发送钉钉通知...');
     const notifier = new DingTalkNotifier(webhook, secret || null);
     const content = lines.join('\n');
     const status = allOk ? '✅ 全部成功' : '⚠️ 部分失败';
@@ -554,13 +621,14 @@ async function main() {
     const fullMessage = `${content}\n\n---\n**${status}** | ${now}`;
     
     const success = await notifier.send(fullMessage, '终末地签到通知');
-    console.log('DingTalk notify:', success ? 'ok' : 'failed');
+    console.log('钉钉通知:', success ? '发送成功' : '发送失败');
   }
   
-  console.log('Task completed');
+  console.log('');
+  console.log('=== 任务完成 ===');
 }
 
 main().catch(e => {
-  console.error('Error:', e);
+  console.error('程序异常:', e);
   process.exit(1);
 });

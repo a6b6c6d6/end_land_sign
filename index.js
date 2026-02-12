@@ -83,7 +83,7 @@ class ProxyManager {
     console.log("正在获取代理列表...");
     try {
       // 使用 89ip 免费代理 API
-      const apiUrl = 'https://api.89ip.cn/tqdl.html?api=1&num=100&port=&address=&isp=';
+      const apiUrl = 'https://api.89ip.cn/tqdl.html?api=1&num=4000&port=&address=&isp=';
       const resp = await axios.get(apiUrl, { timeout: 10000 });
       const text = resp.data;
       
@@ -748,3 +748,4 @@ main().catch(e => {
   console.error('程序异常:', e);
   process.exit(1);
 });
+

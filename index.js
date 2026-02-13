@@ -679,21 +679,28 @@ async function main() {
   
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    lines.push(`#### 🌈 账号 ${i + 1}`);
     console.log(`--- 开始处理账号 ${i + 1} ---`);
-    
     try {
+      const authCode = await client.authenticate(token);
+      const cred = await client.getCredential(authCode);
+      const bindings = await client.getBindings(cred);
+      // 提取角色名称来作为账号标识
+      let accountLabel = `账号 ${i + 1}`;
+      if (bindings.length > 0) {
+        const firstBinding = bindings[0];
+        accountLabel = firstBinding.nickName || `账号 ${i + 1}`;
+      }
+      lines.push(`#### 🌈 ${accountLabel}`);
+  
+
       const results = await client.run(token);
-      
       if (results.length === 0) {
         lines.push('- ⚠️ 未找到终末地角色绑定');
         allOk = false;
       } else {
         for (const result of results) {
           const isSignedAlready = !result.ok && result.isSigned;
-          
           let icon, statusText, detail;
-          
           if (result.ok) {
             icon = '✅';
             statusText = '成功';
@@ -707,11 +714,9 @@ async function main() {
             statusText = '失败';
             detail = ` (${result.error})`;
           }
-          
           const line = `${icon} ${result.game}: ${statusText}${detail}`;
           lines.push(`- ${line}`);
           console.log(`  ${line}`);
-          
           if (!result.ok && !isSignedAlready) allOk = false;
         }
       }
@@ -720,7 +725,6 @@ async function main() {
       lines.push(`- ❌ **系统错误**: ${e.message}`);
       allOk = false;
     }
-    
     lines.push('');
     console.log('');
   }
@@ -733,7 +737,7 @@ async function main() {
     const notifier = new DingTalkNotifier(webhook, secret || null);
     const content = lines.join('\n');
     const status = allOk ? '✅ 全部成功' : '⚠️ 部分失败';
-    const now = moment().format('YYYY-MM-DD HH:mm:ss');
+    const now = moment().utcOffset(8).format('YYYY-MM-DD HH:mm:ss');
     const fullMessage = `${content}\n\n---\n**${status}** | ${now}`;
     
     const success = await notifier.send(fullMessage, '终末地签到通知');
@@ -748,4 +752,5 @@ main().catch(e => {
   console.error('程序异常:', e);
   process.exit(1);
 });
+
 
